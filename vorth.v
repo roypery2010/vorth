@@ -50,11 +50,19 @@ fn div(mut vm VM) {
 fn eq(mut vm VM) {
 	b := vm.pop()
 	a := vm.pop()
-	if a == b {
-		vm.push(1)
-	} else {
-		vm.push(0)
-	}
+	vm.push(if a == b { 1 } else { 0 })
+}
+
+fn gt(mut vm VM) {
+	b := vm.pop()
+	a := vm.pop()
+	vm.push(if a > b { 1 } else { 0 })
+}
+
+fn dup(mut vm VM) {
+	val := vm.pop()
+	vm.push(val)
+	vm.push(val)
 }
 
 fn print_val(mut vm VM) {
@@ -62,7 +70,8 @@ fn print_val(mut vm VM) {
 	print("${val} ")
 }
 
-// Simulator supports nested if-else-end via skip_stack managing each block's skip flag
+// --- Simulator ---
+
 fn simulate_program(input_path string) {
 	source := os.read_file(input_path) or {
 		eprintln("Error: cannot read file '$input_path'")
@@ -71,86 +80,161 @@ fn simulate_program(input_path string) {
 	mut vm := VM{}
 	tokens := source.split_any(" \n\t").filter(it.len > 0)
 
-	mut skip_stack := []bool{} // stack of skip flags per nested block
+	mut control_stack := []string{} // "keep", "skip", "while"
+	mut while_stack := []int{}      // positions of while tokens for loops
 	mut printed := false
 
-	for i, tok in tokens {
-		tok_clean := tok.trim_space()
+	mut i := 0
+	for i < tokens.len {
+		tok := tokens[i].trim_space()
 
-		// If currently skipping (in any nested block), process nested if/else/end accordingly
-		if skip_stack.len > 0 && skip_stack.last() {
-			match tok_clean {
-				"if" {
-					// nested if inside skipped block — push skip=true to skip it too
-					skip_stack << true
+		// Skipping block
+		if control_stack.len > 0 && control_stack.last() == "skip" {
+			match tok {
+				"if", "while" {
+					control_stack << "skip"
+				}
+				"end" {
+					control_stack.delete_last()
+					if while_stack.len > 0 {
+						while_stack.delete_last()
+					}
 				}
 				"else" {
-					if skip_stack.len == 0 {
+					if control_stack.len == 0 {
 						eprintln("Error: 'else' without matching 'if'")
 						exit(1)
 					}
-					// flip skip state for else block
-					skip_stack[skip_stack.len - 1] = !skip_stack.last()
-				}
-				"end" {
-					if skip_stack.len == 0 {
-						eprintln("Error: 'end' without matching 'if'")
-						exit(1)
+					if control_stack.last() == "skip" {
+						control_stack.delete_last()
+						control_stack << "keep"
+					} else {
+						control_stack.delete_last()
+						control_stack << "skip"
 					}
-					skip_stack.delete_last()
 				}
 				else {}
 			}
+			i++
 			continue
 		}
 
-		match tok_clean {
+		match tok {
 			"+" { plus(mut vm) }
 			"-" { minus(mut vm) }
 			"*" { mult(mut vm) }
 			"/" { div(mut vm) }
 			"=" { eq(mut vm) }
+			">" { gt(mut vm) }
+			"dup" { dup(mut vm) }
 			"." {
 				print_val(mut vm)
 				printed = true
 			}
 			"if" {
 				cond := vm.pop()
-				// push whether to skip this block (true if condition false)
-				skip_stack << (cond == 0)
+				if cond == 0 {
+					control_stack << "skip"
+				} else {
+					control_stack << "keep"
+				}
 			}
 			"else" {
-				if skip_stack.len == 0 {
+				if control_stack.len == 0 {
 					eprintln("Error: 'else' without matching 'if'")
 					exit(1)
 				}
-				// flip skip state for else branch
-				skip_stack[skip_stack.len - 1] = !skip_stack.last()
+				if control_stack.last() == "skip" {
+					control_stack.delete_last()
+					control_stack << "keep"
+				} else {
+					control_stack.delete_last()
+					control_stack << "skip"
+				}
 			}
 			"end" {
-				if skip_stack.len == 0 {
-					eprintln("Error: 'end' without matching 'if'")
+				if control_stack.len == 0 {
+					eprintln("Error: 'end' without matching 'if' or 'while'")
 					exit(1)
 				}
-				skip_stack.delete_last()
+				last_control := control_stack.last()
+				control_stack.delete_last()
+
+				if last_control == "while" {
+					if while_stack.len == 0 {
+						eprintln("Error: while_stack empty at end")
+						exit(1)
+					}
+					loop_start := while_stack.last()
+					i = loop_start - 1 // jump back to 'while' token (minus 1 because of i++ below)
+				} else if last_control == "skip" || last_control == "keep" {
+					// normal if/end, do nothing extra
+				} else {
+					eprintln("Error: unknown control flow state '$last_control'")
+					exit(1)
+				}
+
+				if last_control == "while" {
+					while_stack.delete_last()
+				}
+			}
+			"while" {
+				control_stack << "while"
+				while_stack << i
+			}
+			"do" {
+				if control_stack.len == 0 || control_stack.last() != "while" {
+					eprintln("Error: 'do' without matching 'while'")
+					exit(1)
+				}
+				cond := vm.pop()
+				if cond == 0 {
+					// Skip loop body, find matching end
+					mut nested := 1
+					mut j := i + 1
+					for j < tokens.len && nested > 0 {
+						t := tokens[j].trim_space()
+						if t == "while" {
+							nested++
+						} else if t == "end" {
+							nested--
+						}
+						j++
+					}
+					if nested != 0 {
+						eprintln("Error: unmatched 'while'/'end' in loop")
+						exit(1)
+					}
+					i = j - 1
+					control_stack.delete_last() // pop 'while'
+					while_stack.delete_last()
+				}
 			}
 			else {
-				num := tok_clean.int()
-				if num.str() == tok_clean {
+				num := tok.int()
+				if num.str() == tok {
 					vm.push(num)
 				} else {
-					eprintln("Error in '$input_path' at token #${i+1} ('$tok_clean') — unknown word")
+					eprintln("Error at token #${i+1} ('$tok') — unknown word")
 					exit(1)
 				}
 			}
 		}
+		i++
 	}
+
 	if printed {
 		println("")
 	}
 }
 
-// Compiler supports nested if-else-end via two stacks for if & else labels
+// --- Compiler ---
+
+struct LoopLabels {
+	start string
+	end   string
+}
+
 fn generate_asm(program string, asm_path string, input_path string) {
 	mut assembly := []string{}
 	assembly << "extern printf"
@@ -165,12 +249,14 @@ fn generate_asm(program string, asm_path string, input_path string) {
 
 	mut if_stack := []string{}
 	mut else_stack := []string{}
+	mut while_stack := []LoopLabels{}
 	mut label_count := 0
 	mut printed := false
 
-	for i, tok in tokens {
-		tok_clean := tok.trim_space()
-		match tok_clean {
+	for i := 0; i < tokens.len; i++ {
+		tok := tokens[i].trim_space()
+
+		match tok {
 			"+" {
 				assembly << "    pop rbx"
 				assembly << "    pop rax"
@@ -202,6 +288,19 @@ fn generate_asm(program string, asm_path string, input_path string) {
 				assembly << "    cmp rax, rbx"
 				assembly << "    mov rax, 0"
 				assembly << "    sete al"
+				assembly << "    push rax"
+			}
+			">" {
+				assembly << "    pop rbx"
+				assembly << "    pop rax"
+				assembly << "    cmp rax, rbx"
+				assembly << "    mov rax, 0"
+				assembly << "    setg al"
+				assembly << "    push rax"
+			}
+			"dup" {
+				assembly << "    pop rax"
+				assembly << "    push rax"
 				assembly << "    push rax"
 			}
 			"." {
@@ -244,18 +343,39 @@ fn generate_asm(program string, asm_path string, input_path string) {
 					skip_if_label := if_stack.last()
 					if_stack.delete_last()
 					assembly << "${skip_if_label}:"
+				} else if while_stack.len > 0 {
+					loop_labels := while_stack.last()
+					while_stack.delete_last()
+					assembly << "    jmp ${loop_labels.start}"
+					assembly << "${loop_labels.end}:"
 				} else {
-					eprintln("Error: 'end' without matching 'if' or 'else' in '$input_path'")
+					eprintln("Error: 'end' without matching 'if', 'else', or 'while' in '$input_path'")
 					exit(1)
 				}
 			}
+			"while" {
+				label_count++
+				start_label := "while_${label_count}_start"
+				end_label := "while_${label_count}_end"
+				while_stack << LoopLabels{start_label, end_label}
+				assembly << "${start_label}:"
+			}
+			"do" {
+				if while_stack.len == 0 {
+					eprintln("Error: 'do' without matching 'while' in '$input_path'")
+					exit(1)
+				}
+				loop_labels := while_stack.last()
+				assembly << "    pop rax"
+				assembly << "    cmp rax, 0"
+				assembly << "    je ${loop_labels.end}"
+			}
 			else {
-				num := tok_clean.int()
-				if num.str() == tok_clean {
+				num := tok.int()
+				if num.str() == tok {
 					assembly << "    push ${num}"
 				} else {
-					eprintln("Error in '$input_path' at token #${i+1} ('$tok_clean') — unknown word")
-					eprintln("Tokens processed so far: ${tokens[..i+1]}")
+					eprintln("Error in '$input_path' at token #${i+1} ('$tok') — unknown word")
 					exit(1)
 				}
 			}

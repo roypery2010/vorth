@@ -5,47 +5,40 @@ section .data
     newline: db 10, 0
 section .text
 main:
-    push 34
-    push 35
-    pop rbx
+    push 10
+while_1_start:
     pop rax
-    add rax, rbx
     push rax
-    push 69
+    push rax
+    push 0
     pop rbx
     pop rax
     cmp rax, rbx
     mov rax, 0
-    sete al
+    setg al
     push rax
     pop rax
     cmp rax, 0
-    je skip_if_1
-    push 0
+    je while_1_end
     pop rax
-    cmp rax, 0
-    je skip_if_2
-    push 23
+    push rax
+    push rax
     pop rsi
     lea rdi, [rel fmt]
     xor rax, rax
     call printf
-    jmp skip_else_3
-skip_if_2:
-    push 42
+    push 1
+    pop rbx
+    pop rax
+    sub rax, rbx
+    push rax
+    jmp while_1_start
+while_1_end:
+    push 6969
     pop rsi
     lea rdi, [rel fmt]
     xor rax, rax
     call printf
-skip_else_3:
-    jmp skip_else_4
-skip_if_1:
-    push 420
-    pop rsi
-    lea rdi, [rel fmt]
-    xor rax, rax
-    call printf
-skip_else_4:
     lea rdi, [rel newline]
     xor rax, rax
     call printf
