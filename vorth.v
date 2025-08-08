@@ -62,6 +62,7 @@ fn print_val(mut vm VM) {
 	print("${val} ")
 }
 
+// Simulator supports nested if-else-end via skip_stack managing each block's skip flag
 fn simulate_program(input_path string) {
 	source := os.read_file(input_path) or {
 		eprintln("Error: cannot read file '$input_path'")
@@ -70,17 +71,39 @@ fn simulate_program(input_path string) {
 	mut vm := VM{}
 	tokens := source.split_any(" \n\t").filter(it.len > 0)
 
-	mut skip_block := false
+	mut skip_stack := []bool{} // stack of skip flags per nested block
 	mut printed := false
 
 	for i, tok in tokens {
 		tok_clean := tok.trim_space()
-		if skip_block {
-			if tok_clean == "end" {
-				skip_block = false
+
+		// If currently skipping (in any nested block), process nested if/else/end accordingly
+		if skip_stack.len > 0 && skip_stack.last() {
+			match tok_clean {
+				"if" {
+					// nested if inside skipped block — push skip=true to skip it too
+					skip_stack << true
+				}
+				"else" {
+					if skip_stack.len == 0 {
+						eprintln("Error: 'else' without matching 'if'")
+						exit(1)
+					}
+					// flip skip state for else block
+					skip_stack[skip_stack.len - 1] = !skip_stack.last()
+				}
+				"end" {
+					if skip_stack.len == 0 {
+						eprintln("Error: 'end' without matching 'if'")
+						exit(1)
+					}
+					skip_stack.delete_last()
+				}
+				else {}
 			}
 			continue
 		}
+
 		match tok_clean {
 			"+" { plus(mut vm) }
 			"-" { minus(mut vm) }
@@ -93,11 +116,24 @@ fn simulate_program(input_path string) {
 			}
 			"if" {
 				cond := vm.pop()
-				if cond == 0 {
-					skip_block = true
-				}
+				// push whether to skip this block (true if condition false)
+				skip_stack << (cond == 0)
 			}
-			"end" {}
+			"else" {
+				if skip_stack.len == 0 {
+					eprintln("Error: 'else' without matching 'if'")
+					exit(1)
+				}
+				// flip skip state for else branch
+				skip_stack[skip_stack.len - 1] = !skip_stack.last()
+			}
+			"end" {
+				if skip_stack.len == 0 {
+					eprintln("Error: 'end' without matching 'if'")
+					exit(1)
+				}
+				skip_stack.delete_last()
+			}
 			else {
 				num := tok_clean.int()
 				if num.str() == tok_clean {
@@ -114,6 +150,7 @@ fn simulate_program(input_path string) {
 	}
 }
 
+// Compiler supports nested if-else-end via two stacks for if & else labels
 fn generate_asm(program string, asm_path string, input_path string) {
 	mut assembly := []string{}
 	assembly << "extern printf"
@@ -127,6 +164,7 @@ fn generate_asm(program string, asm_path string, input_path string) {
 	tokens := program.split_any(" \n\t").filter(it.len > 0)
 
 	mut if_stack := []string{}
+	mut else_stack := []string{}
 	mut label_count := 0
 	mut printed := false
 
@@ -175,18 +213,40 @@ fn generate_asm(program string, asm_path string, input_path string) {
 			}
 			"if" {
 				label_count++
-				label := "skip_${label_count}"
-				if_stack << label
+				skip_if_label := "skip_if_${label_count}"
+				if_stack << skip_if_label
 
 				assembly << "    pop rax"
 				assembly << "    cmp rax, 0"
-				assembly << "    je ${label}"
+				assembly << "    je ${skip_if_label}"
+			}
+			"else" {
+				if if_stack.len == 0 {
+					eprintln("Error: 'else' without matching 'if' in '$input_path'")
+					exit(1)
+				}
+				label_count++
+				skip_else_label := "skip_else_${label_count}"
+				else_stack << skip_else_label
+
+				assembly << "    jmp ${skip_else_label}"
+
+				skip_if_label := if_stack.last()
+				if_stack.delete_last()
+				assembly << "${skip_if_label}:"
 			}
 			"end" {
-				if if_stack.len > 0 {
-					label := if_stack.last()
+				if else_stack.len > 0 {
+					skip_else_label := else_stack.last()
+					else_stack.delete_last()
+					assembly << "${skip_else_label}:"
+				} else if if_stack.len > 0 {
+					skip_if_label := if_stack.last()
 					if_stack.delete_last()
-					assembly << "${label}:"
+					assembly << "${skip_if_label}:"
+				} else {
+					eprintln("Error: 'end' without matching 'if' or 'else' in '$input_path'")
+					exit(1)
 				}
 			}
 			else {
